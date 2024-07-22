@@ -46,7 +46,7 @@ app.include_router(docs.router)
 if __name__ == "__main__":
     # Load environment variables from the .env file
     load_dotenv()
-
+    
     # Initialize the logger
     logger = CustomLogger()
     logger.log_example_messages()
