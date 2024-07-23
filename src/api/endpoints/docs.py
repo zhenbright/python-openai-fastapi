@@ -1,9 +1,11 @@
 from datetime import datetime 
+
 import os
 from typing import Annotated, List, Optional
 from fastapi import APIRouter, FastAPI, File, Form, UploadFile
 from src.utils.logging_config import CustomLogger
 from starlette.responses import RedirectResponse
+from src.service.GenerateService import GenerateService
 
 # Get the logger instance from the CustomLogger class
 logger = CustomLogger().get_logger
@@ -15,6 +17,7 @@ router = APIRouter()
 app = FastAPI(swagger_ui_parameters={"tryItOutEnabled": True})
 
 # Define a Docmentation endpoint
+generate_service = GenerateService()
 @router.get("/")
 async def root():
     return RedirectResponse(app.docs_url)
@@ -28,6 +31,7 @@ async def generate(
         pageUseCase: str = Form(...),
         files: list[UploadFile] = File(...),
     ):
+    
     now = datetime.now()
     formatted_date = now.strftime("%Y-%m-%d-%M_%S")
     save_directory = f'./public/{formatted_date}/'
@@ -40,5 +44,12 @@ async def generate(
         file_path = os.path.join(save_directory, file.filename)
         with open(file_path, 'wb') as f:
             f.write(contents)
-            
-    return {"message": "Files successfully uploaded", "service": service}
+    
+    response = generate_service.generate(
+        service,
+        promptText,
+        pageAnalysis,
+        pageResult,
+        pageUseCase,
+    )            
+    return response
