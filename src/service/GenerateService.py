@@ -1,6 +1,10 @@
+import json
 import os
+import re
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from src.service.PDFService import PDFService
 
 
 load_dotenv()
@@ -20,7 +24,8 @@ class GenerateService:
         pageUseCase: str,
         file_paths: list
     ):  
-        system_prompt = """
+
+        outline_prompt = """
             You are an AI language model tasked with generating an outline or table of contents for a new document based on the provided specifications about ****. The document should be structured into three main sections: Analysis, Results, and Case Uses. The total length of the document should be 70 pages, divided as follows:
 
             Analysis: {xx} pages
@@ -103,33 +108,13 @@ class GenerateService:
                     "total_pages": 5
                     }
                 ]
-                },
-                {
-                "chapter_number": 2,
-                "chapter_title": "Chapter Two Title",
-                "start_page": 11,
-                "total_pages": 15,
-                "sections": [
-                    {
-                    "section_number": 2.1,
-                    "section_title": "First Section of Chapter Two",
-                    "start_page": 11,
-                    "total_pages": 8
-                    },
-                    {
-                    "section_number": 2.2,
-                    "section_title": "Second Section of Chapter Two",
-                    "start_page": 19,
-                    "total_pages": 7
-                    }
-                ]
                 }
                 // Add more chapters as needed
-            ]
+                ]
             }
             """
             # Replace placeholders with actual page numbers
-        prompt = system_prompt.replace('xx', str(pageAnalysis)) \
+        prompt = outline_prompt.replace('xx', str(pageAnalysis)) \
                             .replace('yy', str(pageResult)) \
                             .replace('zz', str(pageUseCase)) \
                             .replace('****', str(service))
@@ -152,19 +137,18 @@ class GenerateService:
         # Use the upload and poll SDK helper to upload the files, add them to the vector store,
         # and poll the status of the file batch for completion.
         file_batch = self.client.beta.vector_stores.file_batches.upload_and_poll(
-        vector_store_id=vector_store.id, files=file_streams
-        )
-        
+                        vector_store_id=vector_store.id, files=file_streams
+                    )
         # You can print the status and the file counts of the batch to see the result of this operation.
         print(file_batch.status)
         print(file_batch.file_counts)
         
-        #Update Assistant
         assistant = self.client.beta.assistants.update(
             assistant_id=assistant.id,
             tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
         )
-        
+        print("create new thread")
+        # Create new thread
         thread = self.client.beta.threads.create(
             messages=[
                 {
@@ -173,25 +157,51 @@ class GenerateService:
                 }
             ]
         )
-        print(thread.tool_resources.file_search)
-        
         run = self.client.beta.threads.runs.create_and_poll(
             thread_id=thread.id, assistant_id=assistant.id
         )
-
         messages = list(self.client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
-
         message_content = messages[0].content[0].text
-        annotations = message_content.annotations
-        citations = []
-        for index, annotation in enumerate(annotations):
-            message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
-            if file_citation := getattr(annotation, "file_citation", None):
-                cited_file = self.client.files.retrieve(file_citation.file_id)
-                citations.append(f"[{index}] {cited_file.filename}")
-
-        print(message_content.value)
-        print("----------------------------")
-        print("\n".join(citations))
         
-        return message_content.value
+        # Use regular expression to find text between triple backticks  
+        json_string = re.search(r'```json(.*?)```', message_content.value, re.DOTALL).group(1).strip()
+        print(json_string)
+        outline_object = json.loads(json_string)
+        print(outline_object)
+        assistant = self.client.beta.assistants.update(
+            assistant_id=assistant.id,
+            instructions="You are an expert business analyst assistant. Your task is to generate detailed descriptions for sections of a business analysis document.",
+            tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
+        )
+
+        prompts = []
+        for chapter in outline_object['chapters']:
+            chapter_info = f"Chapter {chapter['chapter_number']}: {chapter['chapter_title']}\n"
+            
+            for section in chapter['sections']:
+                section_info = f"  Section {section['section_number']}: {section['section_title']}\n"
+                section_title = section["section_title"]
+                total_pages = section["total_pages"]
+                message = self.client.beta.threads.messages.create(
+                    thread_id=thread.id,
+                    role="user",
+                    content=section_title
+                )
+                run = self.client.beta.threads.runs.create_and_poll(
+                    thread_id=thread.id, assistant_id=assistant.id
+                )
+                messages = self.client.beta.threads.messages.list(
+                    thread_id=thread.id
+                )
+                run_messages = [msg for msg in messages if msg.run_id == run.id]
+                if run.status == 'completed':
+                    for msg in run_messages:
+                        if msg.role == 'assistant':  # Assuming the assistant's role is labeled as 'assistant'
+                            print(f"Response for section '{section_title}':")
+                            section['descption'] = msg.content[0].text.value
+                    section['status'] = run.status
+                    print(run.status)
+        # print(messages)
+        return outline_object
+        # return ''
+    

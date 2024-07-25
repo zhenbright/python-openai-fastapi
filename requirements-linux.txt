@@ -11,3 +11,4 @@ requests
 Pillow
 colorlog
 modal
+fpdf2
